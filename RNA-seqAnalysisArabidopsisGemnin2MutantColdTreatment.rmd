@@ -1,0 +1,532 @@
+---
+title: "RNA-seq analysis of Arabidopsis Gemnin2 mutant under cold treatment"
+author: "lihua wu"
+date: "December 7, 2015"
+output: html_document
+---
+# Title:
+
+RNA-seq analysis of Arabidopsis Gemnin2 mutant under cold treatment
+
+# Abstract: 
+
+In this project, I use **edgeR** and **voom** to analyze Arabidopsis RNA-seq data. I identified similar number of differentially expressed genes with the author. I use **AgriGO** and **Ami GO2** online tools to do GO enrichment analysis, and observe similar significant GO terms with the author. I also partly repeat one of the comparisons done by the author, the result partially support the author's conclusion that there is a strong overlap between the effects of cold conditions on pre- mRNA splicing events in wild-type plants and the effects of GEMIN2 on pre-mRNA splicing events at 22 °C. 
+
+# Introduction: 
+
+Many organisms coordinate robust biological process to enviromental changes with circadian systems, the core of which is a network of multiple interlocked feedback loops which operate at the transcriptional, translational and post-translational levels. RNA porcessing is mediated by proteins and RNA molecules which are highly sensitive to temperature variation. Pre-mRNA splicing is catalyzed by the spliceosome and GEMIN2 is a spliceosome assembly factor. Investigate whether modulation in spliceosomee assembly links the regulation of AS to the control of circadian networks in plants could give us more evidence about the molecular mechanism adopted by plants to cope with temperature variation.   
+
+# Background and Data
+
+Gemin2 is the only component of the survival motor nuron complex that is conserved from yeast to human. For the RNA-seq experiment, seeds of both WT and gemin2 mutant are sown on MS medium and stratified for 4°C in the dark for 4d then grown at 22°C. For the cold treatment, seedlings are grown first at 22 °C, then moved to 10 °C for 1h or 24h. In the end whold seedlings are collected for RNA-seq. The authors did two sets of RNA-seq on wildtype  and GEMIN2 mutant Arabidopsis seedlings using different sequencing platforms. The first set is to compare the transcriptional profile (RNA-seq) of gemin2 and wild type plants grown under continuous light conditions with the Illumina Genome Analyzer IIx plat form.The raw count data can be downloaded from http://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE63405.
+
+The second set of experiment is to compare the transcriptional profile (RNA-seq) of wild type and Gemin2 Arabidopsis mutants plants exposed to 10ºC for 0, 1 and 24 hours with Illumina Hiseq 1500 sequencing plat form.The raw count data could be downloaded from http://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE63406. Sequence reads were mapped to Arabidopsis thaliana TAIR10 genome using TopHat v2.0.9 with default parameters, except for maximum intron length set at 5,000. Count tables for different feature levels were obtained from bam files using custom R scripts and considering TAIR10 transcriptome. I will only use data from the second experiment in this project. 
+
+# Methods
+
+In the original paper, the differential gene expression was estimated using edgeR package version 3.4.2 and resultig P values were adjusted using FDR criterion. In my project, I will redo differential expression analysis with count data sets from the second set of experiment using two methods: edgeR and limma/voom(). I will also do Gene Ontology Enrichment analysis. Here is the pipeline I am using to analyze the RNA-seq data:
+1. Quality control and normalization of the RNA-seq data.
+2. **edgeR** differential expression analysis
+3. **voom** differential expression analysis
+4. Rough comparison of the **edgeR** result from the paper with my own **edgeR** and **limma/voom()** result using venn diagrams.
+5. GO enrichment analysis using online tool AgriGo and Ami GO2. 
+
+# Results 
+
+## Read in the RNA-seq Count Data
+
+There are 33602 TAIR gene locus in the count data, but in this data set there is only TAIR IDs, so I try to add Entrez Gene IDs to the **ColdFile** using the R package **org.At.tair.db**. But there are only 27206 out of 33602 TAIRID are matched to ENTREZID, so I will not add Entrez ID to the data at this time.  
+
+```{r getData}
+ColdFile=read.csv("cold gene counts.csv",header=TRUE,sep = ",") # Read in the gene counts data in the cold treatment. 
+ColdCounts=cbind(ColdFile[,17:25],ColdFile[,8:16])
+colnames(ColdCounts)=paste(rep(c("G2","WT"),each=9), rep(c("0h","1h","24h"),each=3),rep(c("A","B","C"),6),sep=".")
+row.names(ColdCounts)=ColdFile[,1] 
+```
+
+```{r results="hide"}
+source("https://bioconductor.org/biocLite.R")
+biocLite("org.At.tair.db")
+library("org.At.tair.db")
+```
+```{r getEntrezID}
+ColdTAIRID=as.character(ColdFile$locus) # Set the ColdTAIRID as character. 
+ColdEntrezID=select(org.At.tair.db,ColdTAIRID,"ENTREZID") # Select EntrezID matched to TAIRID from the database. 
+ColdEntrezID=na.omit(ColdEntrezID) # Remove rows with NA value. 
+dim(ColdEntrezID)
+```
+
+## Data Quality Assessment.
+
+In order to check the distribution of the counts in every sample, I draw the histograms of the log2(counts). I find that the distribution of the counts in every sample are similar with 0 as the predominance. To see how the samples are correlated, I use **hexplom** to draw scatterplots of the lColdCounts. For the WT group, I find the three samples within each treatment (CT,1h or 24h) correlate strongly, while samples from different treatments correlate less strongly.Then I compute library sizes and find that the 18 samples have different sizes, with the minimum as 15675913 and the maximum as 53766089. I also check the feature ratio to see whether there are any features with big read counts, and I see the biggest feature size ratio is 0.037 of the total library size. Since there is no power to detect differential expression analysis for low read counts I discard features with fewer than 10 reads. At last, there are 24445 gene locus left. After filtering, I recheck the shape of the count distribution by drawing histograms. This time the most frequent value of counts is no longer 0, and they have very similar shape. Finally, to get the big picture of whether there are differences among genotypes, I use correlation and complete linkage clustering to cluster the samples. It is very interesting that the WT_24h clusters with G2_24h, while G2_1h clusters with G2 control, WT_1h clusters with WT_1h. And both 0h and 1h from either G2 or WT cluster more closer than the 24h treatment.  
+
+```{r histo of log2(counts)}
+lColdCounts=log2(ColdCounts+0.5)
+par(mfrow=c(3,3))
+for (i in 1:9) hist(lColdCounts[,i],main=colnames(lColdCounts)[i]) # Histograms  of log2(counts) for G2 group.
+par(mfrow=c(3,3))
+for (i in 10:18) hist(lColdCounts[,i],main=colnames(lColdCounts)[i]) # Histograms  of log2(counts) for WT group. 
+```
+```{r hexplom}
+library(hexbin)
+plot(hexplom(lColdCounts[,1:9])) # Scatterplots of the lColdCounts in G2 group.
+plot(hexplom(lColdCounts[,10:18])) # Scatterplots of the lColdCounts in WT group.
+```
+```{r lib.size}
+Coldlib.size <- colSums(ColdCounts) # Calculate library sizes. 
+Coldlib.size
+```
+```{r fea.size}
+fea.size=rowSums(ColdCounts) # Sum up the number of reads of each feature. 
+par(mfrow=c(1,1))
+hist(log2(fea.size+0.5)) # Histogram of total counts for each feature.
+max(fea.size)/sum(fea.size) # Calculat the percentage of the top one feature
+```
+```{r filter}
+sum(fea.size<10)  
+bigColdCounts=ColdCounts[fea.size>=10,] 
+dim(bigColdCounts)
+```
+```{r reDrawHisto}
+par(mfrow=c(3,3))
+lColdBig=log2(bigColdCounts+0.5)
+for (i in 1:9) hist(lColdBig[,i],main=colnames(ColdCounts)[i])
+par(mfrow=c(3,3))
+for (i in 10:18) hist(lColdBig[,i],main=colnames(ColdCounts)[i])
+```
+```{r cluster}
+par(mfrow=c(1,1))
+lColdBig=log2(bigColdCounts+0.5)
+dist <- as.dist(1-cor(lColdBig))
+plot(hclust(dist))
+```
+
+## RNA-seq Count Data Normalization
+
+According to the above data quality check, I find that the samples have different library sizes, so I do normalization to equalize the library sizes using TMM (Robinson \& Olshack, 2010) method. The **edgeR** package is load and the data along with the normalization factors are put into a **DGEList** object. A variable is created for treatment. Next I compute the common dispersion,trended dispersion and tagwise dispersion for negative binomial GLMs with the **estimateDisp()** function in **edgeR**. The common dispersion is 0.01812275. But I will use the **trendeddispersion** for further differentially gene analysis. Then I also draw the multidimensional scaling plot of distances between gene expression profiles. In the plot, dimension 1 seperates 10 ºC 24h from control or 1 h. Dimension 2 seperates WT from G2 mutant. And I notice that 0h and 1h are very similar in either WT or G2 mutant. This pattern is confirmed with the cluster dendragram.  
+
+```{r edger}
+require(edgeR)
+treatments=factor(paste(rep(c("G2","WT"),each=9), rep(c("0h","1h","24h"),each=3), sep=".")) 
+d=DGEList(counts=bigColdCounts, group=treatments,genes=rownames(bigColdCounts))
+d=calcNormFactors(d,method="TMM")  
+```
+```{r estimatedisp}
+biocLite("locfit")
+require("locfit")
+design=model.matrix(~0+treatments) 
+colnames(design)=levels(treatments)
+d=estimateDisp(d,design)
+d$common.dispersion 
+```
+```{r}
+plotBCV(d)
+plotMDS(d)
+```
+
+## Differential Expression Analysis - **edgeR**
+
+After normalize the count data, I fit Genewise Negative Binomial Generalized Linear Models with quasi-likelyhood tests (**glmQLFit**)to d. And make a contrast for comparisons. I start to find differentially expressed genes for any comparison I am making using **glmQLFTest**. Genes with FDR less than 0.05 and logFC larger than 0.585 are deemed as differentially expressed. Using the **fdr** correction crition, **topTags** can print out the genes sorted by **PValue**. I will use the code for the comparison WT.1vs0 (WT_10 °C_1h vs WT_22 °C) as an example to display how to find differnetially expressed genes. I find there are 2672 genes deemed as differentially expressed, with 1841 upregulated and 831 downregulated. With the similar R code, in comparison WT.24vs0 a total of 8568 genes are deemed as de genes, with 4207 up- genes and 4361 down- genes. In comparison G2vsWT.0h, a total of 2215 genes are deemed as differentially expressed genes, with 1161 up- genes and 1054 down- genes.In comparison G2.1vs0, 1290 genes are deemed as differentially expressed genes, with 971 up genes and 319 down genes. In comparison G2.24vs0, 9622 genes are deemed as differentially expressed genes with 4730 up genes and 4892 down genes. In comparison G2vsWT.1h, 3703 genes are deemed as de genes,with 1675 up genes and 2028 down genes. In comparison G2vsWT.24h, 4755 genes are deemed as de genes, with 2212 up genes and 2543 down genes. 
+
+```{r qlffit}
+qlffit <- glmQLFit(d, design) 
+my.contrasts=makeContrasts(
+        WT.1vs0=WT.1h-WT.0h,
+        WT.24vs0=WT.24h-WT.0h,
+        G2.1vs0=G2.1h-G2.0h,
+        G2.24vs0=G2.24h-G2.0h,
+        G2vsWT.0h=G2.0h-WT.0h,
+        G2vsWT.1h=G2.1h-WT.1h,
+        G2vsWT.24h=G2.24h-WT.24h,
+levels=design
+)
+head(my.contrasts)
+```
+```{r edgeRWT.1vs0}
+qlfWT.1vs0=glmQLFTest(qlffit,contrast=my.contrasts[,"WT.1vs0"])
+topWT.1vs0=topTags(qlfWT.1vs0,n=24445,adjust.method = "fdr",p.value=1) 
+deWT.1vs0=topWT.1vs0[topWT.1vs0$table$FDR<=0.05,]
+deWT.1vs0=deWT.1vs0[abs(deWT.1vs0$table$logFC)>=0.585,] 
+deWT.1vs0.table=deWT.1vs0$table
+dim(deWT.1vs0.table)
+upWT.1vs0=deWT.1vs0.table[deWT.1vs0.table$logFC>0,] # upregulated genes table. 
+downWT.1vs0=deWT.1vs0.table[deWT.1vs0.table$logFC<0,] # downregulated genes table.
+dim(upWT.1vs0)
+dim(downWT.1vs0)
+write.csv(deWT.1vs0.table, file="edgeR.WT.1vs0.csv")
+write.csv(upWT.1vs0,file="upedgeR.WT.1vs0.csv")
+write.csv(downWT.1vs0,file="downedgeR.WT.1vs0.csv")
+```
+```{r echo=FALSE,results='hide'}
+qlfWT.24vs0=glmQLFTest(qlffit,contrast=my.contrasts[,"WT.24vs0"])
+topWT.24vs0=topTags(qlfWT.24vs0,n=24445,adjust.method = "fdr",p.value=1)
+deWT.24vs0=topWT.24vs0[topWT.24vs0$table$FDR<=0.05,]
+deWT.24vs0=deWT.24vs0[abs(deWT.24vs0$table$logFC)>=0.585,] 
+deWT.24vs0.table=deWT.24vs0$table
+dim(deWT.24vs0.table)
+upWT.24vs0=deWT.24vs0.table[deWT.24vs0.table$logFC>0,] # upregulated genes table. 
+downWT.24vs0=deWT.24vs0.table[deWT.24vs0.table$logFC<0,] # downregulated genes table. 
+dim(upWT.24vs0)
+dim(downWT.24vs0)
+write.csv(deWT.24vs0.table, file="edgeR.WT.24vs0.csv")
+write.csv(upWT.24vs0,file="upedgeR.WT.24vs0.csv")
+write.csv(downWT.24vs0,file="downedgeR.WT.24vs0.csv")
+```
+```{r echo=FALSE,results='hide'}
+qlfG2vsWT.0h=glmQLFTest(qlffit,contrast=my.contrasts[,"G2vsWT.0h"])
+topG2vsWT.0h=topTags(qlfG2vsWT.0h,n=24445,adjust.method = "fdr",p.value=1)
+deG2vsWT.0h=topG2vsWT.0h[topG2vsWT.0h$table$FDR<=0.05,]
+deG2vsWT.0h=deG2vsWT.0h[abs(deG2vsWT.0h$table$logFC)>=0.585,]
+deG2vsWT.0h.table=deG2vsWT.0h$table
+dim(deG2vsWT.0h.table)
+upG2vsWT.0h=deG2vsWT.0h.table[deG2vsWT.0h.table$logFC>0,] # upregulated genes table. 
+downG2vsWT.0h=deG2vsWT.0h.table[deG2vsWT.0h.table$logFC<0,] # downregulated genes table.
+dim(upG2vsWT.0h)
+dim(downG2vsWT.0h)
+write.csv(deG2vsWT.0h.table, file="edgeR.G2vsWT.0h.csv")
+write.csv(upG2vsWT.0h,file="upedgeR.G2vsWT.0h.csv")
+write.csv(downG2vsWT.0h,file="downedgeR.G2vsWT.0h.csv")
+```
+```{r echo=FALSE,results='hide'}
+qlfG2.1vs0=glmQLFTest(qlffit,contrast=my.contrasts[,"G2.1vs0"])
+topG2.1vs0=topTags(qlfG2.1vs0,n=24445,adjust.method = "fdr",p.value=1)
+deG2.1vs0=topG2.1vs0[topG2.1vs0$table$FDR<=0.05,]
+deG2.1vs0=deG2.1vs0[abs(deG2.1vs0$table$logFC)>=0.585,]
+deG2.1vs0.table=deG2.1vs0$table
+dim(deG2.1vs0.table)
+upG2.1vs0=deG2.1vs0.table[deG2.1vs0.table$logFC>0,] # upregulated genes table. 
+downG2.1vs0=deG2.1vs0.table[deG2.1vs0.table$logFC<0,] # downregulated genes table. 
+dim(upG2.1vs0)
+dim(downG2.1vs0)
+write.csv(deG2.1vs0.table, file="edgeR.G2.1vs0.csv")
+write.csv(upG2.1vs0,file="upedgeR.G2.1vs0.csv")
+write.csv(downG2.1vs0,file="downedgeR.G2.1vs0.csv")
+```
+```{r echo=FALSE,results='hide'}
+qlfG2.24vs0=glmQLFTest(qlffit,contrast=my.contrasts[,"G2.24vs0"])
+topG2.24vs0=topTags(qlfG2.24vs0,n=24445,adjust.method = "fdr",p.value=1)
+deG2.24vs0=topG2.24vs0[topG2.24vs0$table$FDR<=0.05,]
+deG2.24vs0=deG2.24vs0[abs(deG2.24vs0$table$logFC)>=0.585,]
+deG2.24vs0.table=deG2.24vs0$table
+dim(deG2.24vs0.table)
+upG2.24vs0=deG2.24vs0.table[deG2.24vs0.table$logFC>0,] # upregulated genes table. 
+downG2.24vs0=deG2.24vs0.table[deG2.24vs0.table$logFC<0,] # downregulated genes table. 
+dim(upG2.24vs0)
+dim(downG2.24vs0)
+write.csv(deG2.24vs0.table, file="edgeR.G2.24vs0.csv")
+write.csv(upG2.24vs0,file="upedgeR.G2.24vs0.csv")
+write.csv(downG2.24vs0,file="downedgeR.G2.24vs0.csv")
+```
+```{r echo=FALSE,results='hide'}
+qlfG2vsWT.1h=glmQLFTest(qlffit,contrast=my.contrasts[,"G2vsWT.1h"])
+topG2vsWT.1h=topTags(qlfG2vsWT.1h,n=24445,adjust.method = "fdr",p.value=1)
+deG2vsWT.1h=topG2vsWT.1h[topG2vsWT.1h$table$FDR<=0.05,]
+deG2vsWT.1h=deG2vsWT.1h[abs(deG2vsWT.1h$table$logFC)>=0.585,]
+deG2vsWT.1h.table=deG2vsWT.1h$table
+dim(deG2vsWT.1h.table)
+upG2vsWT.1h=deG2vsWT.1h.table[deG2vsWT.1h.table$logFC>0,] # upregulated genes table. 
+downG2vsWT.1h=deG2vsWT.1h.table[deG2vsWT.1h.table$logFC<0,] # downregulated genes table. 
+dim(upG2vsWT.1h)
+dim(downG2vsWT.1h)
+write.csv(deG2vsWT.1h.table, file="edgeR.G2vsWT.1h.csv")
+write.csv(upG2vsWT.1h,file="upedgeR.G2vsWT.1h.csv")
+write.csv(downG2vsWT.1h,file="downedgeR.G2vsWT.1h.csv")
+```
+```{r echo=FALSE,results='hide'}
+qlfG2vsWT.24h=glmQLFTest(qlffit,contrast=my.contrasts[,"G2vsWT.24h"])
+topG2vsWT.24h=topTags(qlfG2vsWT.24h,n=24445,adjust.method = "fdr",p.value=1)
+deG2vsWT.24h=topG2vsWT.24h[topG2vsWT.24h$table$FDR<=0.05,]
+deG2vsWT.24h=deG2vsWT.24h[abs(deG2vsWT.24h$table$logFC)>=0.585,]
+deG2vsWT.24h.table=deG2vsWT.24h$table
+dim(deG2vsWT.24h.table)
+upG2vsWT.24h=deG2vsWT.24h.table[deG2vsWT.24h.table$logFC>0,] # upregulated genes table. 
+downG2vsWT.24h=deG2vsWT.24h.table[deG2vsWT.24h.table$logFC<0,] # downregulated genes table. 
+dim(upG2vsWT.24h)
+dim(downG2vsWT.24h)
+write.csv(deG2vsWT.24h.table, file="edgeR.G2vsWT.24h.csv")
+write.csv(upG2vsWT.24h,file="upedgeR.G2vsWT.24h.csv")
+write.csv(downG2vsWT.24h,file="downedgeR.G2vsWT.24h.csv")
+```
+
+## The Second Method: **voom** for RNA-seq
+
+Redo the differential expression analysis using the **voom** command in **LIMMA** (Smyth, G. K.,2005). I use **d**  which was computed in **edgeR**.Design and store the design matrix in a matrix named **design**. the **voom** model is fitted to obtain weights for the final linear model. I fit the linear model and the contrasts created in **edgeR**  using the **voom** output.The p.values are dominated by values close to 0, so te shape of this histogram is reasonable for multiple testing adjusted. For the limma/voom() method, I also identify genes with FDR lower than 0.05 and absolute log2FC greater than 0.585 in each comparison. I also use the comparison WT.1vs0 as an example to display how I identify de genes with R code. There are 2725 genes, with 1863 upregulated genes and 862 down regulated genes. There are 8572 genes deemed as differentially expressed with 4229 upregulated and 4343 downregulated genes in comparison WT.24vs0. In the comparison G2.1vs0, there are 1398 genes deemed as de genes with 1004 genes upregulated and 394 down regulated. In the comparison G2.24vs0, there are  9742 genes deemed as de genes with 4813 upregulated and 4929 downregulated. In the comparison G2vsWT.0h, there are 2200 genes deemed as de genes with 1106 upregulated and 1094 downregulated. In the comparison G2vsWT.1h, there are 4072 genes deemed as differentially expressed with 1763 upregulated and 2309 down regulated. In the comparison G2vsWT.24h, there are 4990 genes deemed as differentially expressed with 2351 upregulated and 2639 downregulated. 
+
+```{r limmaVoom}
+require(limma)
+design=model.matrix(~0+treatments)
+v=voom(d,design,plot=TRUE)
+```
+```{r lmfit}
+limmafit=lmFit(v,design) 
+fit.contrast=contrasts.fit(limmafit,my.contrasts) 
+efit.contrast=eBayes(fit.contrast)
+hist(efit.contrast$p.value[,1]) 
+```
+```{r voomWT.1vs0}
+topWT.1vs0voom=topTable(efit.contrast,coef=1,number=nrow(bigColdCounts),adjust.method="fdr",p.value=1,genelist=efit.contrast$genes) 
+deWT.1vs0voom=topWT.1vs0voom[abs(topWT.1vs0voom$logFC)>=0.585,] 
+deWT.1vs0voom=deWT.1vs0voom[deWT.1vs0voom$adj.P.Val<=0.05,]
+dim(deWT.1vs0voom)
+upWT.1vs0voom=deWT.1vs0voom[deWT.1vs0voom$logFC>0,] # Upregulated gene table. 
+downWT.1vs0voom=deWT.1vs0voom[deWT.1vs0voom$logFC<0,] # Downregulated gene table. 
+dim(upWT.1vs0voom)
+dim(downWT.1vs0voom)
+write.csv(deWT.1vs0voom,file="voomWT.1vs0.csv")
+write.csv(upWT.1vs0voom,file="upvoomWT.1vs0.csv")
+write.csv(downWT.1vs0voom,file="downvoomWT.1vs0.csv")
+```
+```{r echo=FALSE,results='hide'}
+topWT.24vs0voom=topTable(efit.contrast,coef=2,number=nrow(bigColdCounts),adjust.method="fdr",p.value=1,genelist=efit.contrast$genes)  
+deWT.24vs0voom=topWT.24vs0voom[abs(topWT.24vs0voom$logFC)>=0.585,]
+deWT.24vs0voom=deWT.24vs0voom[deWT.24vs0voom$adj.P.Val<=0.05,] 
+dim(deWT.24vs0voom)
+upWT.24vs0voom=deWT.24vs0voom[deWT.24vs0voom$logFC>0,]
+downWT.24vs0voom=deWT.24vs0voom[deWT.24vs0voom$logFC<0,]
+dim(upWT.24vs0voom)
+dim(downWT.24vs0voom)
+write.csv(deWT.24vs0voom,file="voomWT.24vs0.csv")
+write.csv(upWT.24vs0voom,file="upvoomWT.24vs0.csv")
+write.csv(downWT.24vs0voom,file="downvoomWT.24vs0.csv")
+```
+```{r echo=FALSE,results='hide'}
+topG2.1vs0voom=topTable(efit.contrast,coef=3,number=nrow(bigColdCounts),adjust.method="fdr",p.value=1,genelist=efit.contrast$genes)
+deG2.1vs0voom=topG2.1vs0voom[abs(topG2.1vs0voom$logFC)>=0.585,] 
+deG2.1vs0voom=deG2.1vs0voom[deG2.1vs0voom$adj.P.Val<=0.05,]
+dim(deG2.1vs0voom)
+upG2.1vs0voom=deG2.1vs0voom[deG2.1vs0voom$logFC>0,]
+downG2.1vs0voom=deG2.1vs0voom[deG2.1vs0voom$logFC<0,]
+dim(upG2.1vs0voom)
+dim(downG2.1vs0voom)
+write.csv(deG2.1vs0voom,file="voomG2.1vs0.csv")
+write.csv(upG2.1vs0voom,file="upvoomG2.1vs0.csv")
+write.csv(downG2.1vs0voom,file="downvoomG2.1vs0.csv")
+```
+```{r echo=FALSE,results='hide'}
+topG2.24vs0voom=topTable(efit.contrast,coef=4,number=nrow(bigColdCounts),adjust.method="fdr",p.value=1,genelist=efit.contrast$genes) 
+deG2.24vs0voom=topG2.24vs0voom[abs(topG2.24vs0voom$logFC)>=0.585,] 
+deG2.24vs0voom=deG2.24vs0voom[deG2.24vs0voom$adj.P.Val<=0.05,] 
+dim(deG2.24vs0voom)
+upG2.24vs0voom=deG2.24vs0voom[deG2.24vs0voom$logFC>0,]
+downG2.24vs0voom=deG2.24vs0voom[deG2.24vs0voom$logFC<0,]
+dim(upG2.24vs0voom)
+dim(downG2.24vs0voom)
+write.csv(deG2.24vs0voom,file="voomG2.24vs0.csv")
+write.csv(upG2.24vs0voom,file="upvoomG2.24vs0.csv")
+write.csv(downG2.24vs0voom,file="downvoomG2.24vs0.csv")
+```
+```{r echo=FALSE,results='hide'}
+topG2vsWT.0hvoom=topTable(efit.contrast,coef=5,number=nrow(bigColdCounts),adjust.method="fdr",p.value=1,genelist=efit.contrast$genes)
+deG2vsWT.0hvoom=topG2vsWT.0hvoom[abs(topG2vsWT.0hvoom$logFC)>=0.585,]
+deG2vsWT.0hvoom=deG2vsWT.0hvoom[deG2vsWT.0hvoom$adj.P.Val<=0.05,]
+dim(deG2vsWT.0hvoom)
+upG2vsWT.0hvoom=deG2vsWT.0hvoom[deG2vsWT.0hvoom$logFC>0,]
+downG2vsWT.0hvoom=deG2vsWT.0hvoom[deG2vsWT.0hvoom$logFC<0,]
+dim(upG2vsWT.0hvoom)
+dim(downG2vsWT.0hvoom)
+write.csv(deG2vsWT.0hvoom,file="voomG2vsWT.0h.csv")
+write.csv(upG2vsWT.0hvoom,file="upvoomG2vsWT.0h.csv")
+write.csv(downG2vsWT.0hvoom,file="downvoomG2vsWT.0h.csv")
+```
+```{r echo=FALSE,results='hide'}
+topG2vsWT.1hvoom=topTable(efit.contrast,coef=6,number=nrow(bigColdCounts),adjust.method="fdr",p.value=1,genelist=efit.contrast$genes) 
+deG2vsWT.1hvoom=topG2vsWT.1hvoom[abs(topG2vsWT.1hvoom$logFC)>=0.585,] 
+deG2vsWT.1hvoom=deG2vsWT.1hvoom[deG2vsWT.1hvoom$adj.P.Val<=0.05,]
+dim(deG2vsWT.1hvoom)
+upG2vsWT.1hvoom=deG2vsWT.1hvoom[deG2vsWT.1hvoom$logFC>0,]
+downG2vsWT.1hvoom=deG2vsWT.1hvoom[deG2vsWT.1hvoom$logFC<0,]
+dim(upG2vsWT.1hvoom)
+dim(downG2vsWT.1hvoom)
+write.csv(deG2vsWT.1hvoom,file="voomG2vsWT.1h.csv")
+write.csv(upG2vsWT.1hvoom,file="upvoomG2vsWT.1h.csv")
+write.csv(downG2vsWT.1hvoom,file="downvoomG2vsWT.1h.csv")
+```
+```{r echo=FALSE,results='hide'}
+topG2vsWT.24hvoom=topTable(efit.contrast,coef=7,number=nrow(bigColdCounts),adjust.method="fdr",p.value=1,genelist=efit.contrast$genes)
+deG2vsWT.24hvoom=topG2vsWT.24hvoom[abs(topG2vsWT.24hvoom$logFC)>=0.585,]
+deG2vsWT.24hvoom=deG2vsWT.24hvoom[deG2vsWT.24hvoom$adj.P.Val<=0.05,] 
+dim(deG2vsWT.24hvoom)
+upG2vsWT.24hvoom=deG2vsWT.24hvoom[deG2vsWT.24hvoom$logFC>0,]
+downG2vsWT.24hvoom=deG2vsWT.24hvoom[deG2vsWT.24hvoom$logFC<0,]
+dim(upG2vsWT.24hvoom)
+dim(downG2vsWT.24hvoom)
+write.csv(deG2vsWT.24hvoom,file="voomG2vsWT.24h.csv")
+write.csv(upG2vsWT.24hvoom,file="upvoomG2vsWT.24h.csv")
+write.csv(downG2vsWT.24hvoom,file="downvoomG2vsWT.24h.csv")
+```
+
+## Check the degree of match with venn diagrams. 
+
+The number of de genes identified by the author (I give it the name **OriedgeR**), by me with edgeR and limma/voom are presented in the following table. I notice that the three method give very similar number. Then I am very interested in testing how well these genes match.I use **VennDiagram** (Chen, H., & Boutros, P. C.,2011)to check how well the DE genes match among edgeR,limma/voom and the author's result. I start with loading the author's de gene lists into R. Similarly, I will use the R code for the **WT.1vs0** comparison to display how I match the three sets of de genes. I find that OriedgeR match edgeR with 2349, and OriedgeR match voom with 2341. They have 2258 in common. For the **WT.24vs0** comparison, OriedgeR match edgeR with 7020 genes, and OriedgeR match voom() with 6931. The three methods have 6892 genes in common. For the **G2.1vs0** comparison, OriedgeR match edgeR with 1201 genes and OriedgeR match voom() with 1233. The three methods have 1157 in common. For the **G2.24vs0** comparison. OriedgeR match edgeR with 8168 genes and OriedgeR match voom() with 8122. The three methods have 8056 in common. For the **G2vsWT.0h** comparison, OriedgeR match edgeR with 1713 genes and OriedgeR match voom() with 1641. The three methods have 1595 in common. For the **G2vsWT.1h** comparison, OriedgeR match edgeR with 3185 genes and OriedgeR match voom() with 3295. The three methods have 3120 in common. For the **G2vsWT.24h** comparison, OriedgeR match edgeR with 3796 genes and OriedgeR match voom() with 3850. The three methods have 3715 in common. Basically, the three sets of de genes match very well.           
+   
+```{r methodCompare}
+de.three.methods=read.csv("DeListForThreeMethod.csv",sep=",", header=TRUE) 
+de.three.methods[,1:4]
+```
+```{r echo=FALSE}
+source("https://bioconductor.org/biocLite.R")
+biocLite("VennDiagram")
+library(VennDiagram)
+require(grid)
+```
+```{r loadOri}
+oriWT.1vs0=read.csv("oriWT-1vs0.csv",header=TRUE,sep = ",", quote = "\"")
+oriWT.24vs0=read.csv("oriWT-24vs0.csv",header=TRUE,sep = ",", quote = "\"")
+oriG2.1vs0=read.csv("oriG2-1vs0.csv",header=TRUE,sep = ",", quote = "\"")
+oriG2.24vs0=read.csv("oriG2-24vs0.csv",header=TRUE,sep = ",", quote = "\"")
+oriG2vsWT.0h=read.csv("oriG2vsWT-0h.csv",header=TRUE,sep = ",", quote = "\"")
+oriG2vsWT.1h=read.csv("oriG2vsWT-1h.csv",header=TRUE,sep = ",", quote = "\"")
+oriG2vsWT.24h=read.csv("oriG2vsWT-24h.csv",header=TRUE,sep = ",", quote = "\"")
+oriWT.1vs0.genes=oriWT.1vs0$Locus
+oriWT.24vs0.genes=oriWT.24vs0$Locus
+oriG2.1vs0.genes=oriG2.1vs0$Locus
+oriG2.24vs0.genes=oriG2.24vs0$Locus
+oriG2vsWT.0h.genes=oriG2vsWT.0h$Locus
+oriG2vsWT.1h.genes=oriG2vsWT.1h$Locus
+oriG2vsWT.24h.genes=oriG2vsWT.24h$Locus
+```
+```{r vennWT.1vs0}
+e.WT.1vs0.genes=c(deWT.1vs0.table$genes)
+voomWT.1vs0.genes=c(deWT.1vs0voom$genes)
+de.genes=list(oriWT.1vs0=oriWT.1vs0.genes,edgeRWT.1vs0=e.WT.1vs0.genes,voomWT.1vs0=voomWT.1vs0.genes)
+plot.new()
+venn.plot=venn.diagram(de.genes,filename=NULL,fill=c("red","blue","yellow"))
+grid.draw(venn.plot)
+```
+```{r echo=FALSE,results='hide'}
+e.WT.24vs0.genes=c(deWT.24vs0.table$genes)
+voomWT.24vs0.genes=c(deWT.24vs0voom$genes)
+de.genes=list(oriWT.24vs0=oriWT.24vs0.genes,edgeRWT.24vs0=e.WT.24vs0.genes,voomWT.24vs0=voomWT.24vs0.genes)
+plot.new()
+venn.plot=venn.diagram(de.genes,filename=NULL,fill=c("red","blue","yellow"))
+grid.draw(venn.plot)
+```
+```{r echo=FALSE,results='hide'}
+e.G2.1vs0.genes=c(deG2.1vs0.table$genes)
+voomG2.1vs0.genes=c(deG2.1vs0voom$genes)
+de.genes=list(oriG2.1vs0=oriG2.1vs0.genes,edgeRG2.1vs0=e.G2.1vs0.genes,voomG2.1vs0=voomG2.1vs0.genes) 
+plot.new()
+venn.plot=venn.diagram(de.genes,filename=NULL,fill=c("red","blue","yellow"))
+grid.draw(venn.plot)
+```
+```{r echo=FALSE,results='hide'}
+e.G2.24vs0.genes=c(deG2.24vs0.table$genes)
+voomG2.24vs0.genes=c(deG2.24vs0voom$genes)
+de.genes=list(oriG2.24vs0=oriG2.24vs0.genes,edgeRG2.24vs0=e.G2.24vs0.genes,voomG2.24vs0=voomG2.24vs0.genes)
+plot.new()  
+venn.plot=venn.diagram(de.genes,filename=NULL,fill=c("red","blue","yellow"))
+grid.draw(venn.plot)
+```
+```{r echo=FALSE,results='hide'}
+e.G2vsWT.0h.genes=c(deG2vsWT.0h.table$genes)
+voomG2vsWT.0h.genes=c(deG2vsWT.0hvoom$genes)
+de.genes=list(oriG2vsWT.0h=oriG2vsWT.0h.genes,edgeRG2vsWT.0h=e.G2vsWT.0h.genes,voomG2vsWT.0h=voomG2vsWT.0h.genes) 
+plot.new()
+venn.plot=venn.diagram(de.genes,filename=NULL,fill=c("red","blue","yellow")) 
+grid.draw(venn.plot)
+```
+```{r echo=FALSE,results='hide'}
+e.G2vsWT.1h.genes=c(deG2vsWT.1h.table$genes)
+voomG2vsWT.1h.genes=c(deG2vsWT.1hvoom$genes)
+de.genes=list(oriG2vsWT.1h=oriG2vsWT.1h.genes,edgeRG2vsWT.1h=e.G2vsWT.1h.genes,voomG2vsWT.1h=voomG2vsWT.1h.genes) 
+plot.new() 
+venn.plot=venn.diagram(de.genes,filename=NULL,fill=c("red","blue","yellow"))
+grid.draw(venn.plot)
+```
+```{r echo=FALSE,results='hide'}
+e.G2vsWT.24h.genes=c(deG2vsWT.24h.table$genes)
+voomG2vsWT.24h.genes=c(deG2vsWT.24hvoom$genes)
+de.genes=list(oriG2vsWT.24h=oriG2vsWT.24h.genes,edgeRG2vsWT.24h=e.G2vsWT.24h.genes,voomG2vsWT.24h=voomG2vsWT.24h.genes) 
+plot.new() 
+venn.plot=venn.diagram(de.genes,filename=NULL,fill=c("red","blue","yellow"))
+grid.draw(venn.plot)
+```
+
+In the original paper, the author observed a strong overlap between the effects of cold conditions on pre- mRNA splicing events in wild-type plants and the effects of GEMIN2 on pre-mRNA splicing events at 22 °C, an overlap that was much larger than that expected to occur simply by chance. To test whether this is the case with my edgeR results, I use **VennDiagram** to see the match of de genes in the comparison **G2vsWT.0h**, the de genes in the comparison **WT.1vs0** or **WT.24vs0**. I observe tnat up-regulated genes for **WT.1vs0** and **G2vsWT.0h** overlap by 173, and the down-regulated genes overlap by 68. For **WT.24vs0** and **G2vsWT.0h**, up-regulated genes overlap by 500, and the down regulated genes overlap by 412. The overlapiing de genes does increase by a large number (from 1h to 24h cold treatment, from 173 to 500 for upregulated genes, and from 68 to 412 for underregulated genes). This partially confirms the author's obsevation, while since I do not analyze the AS events data, so I could not completely confirm the author's observation that the AS events also change in this pattern. 
+
+```{r}
+downWT.1vs0genes=c(downWT.1vs0$genes)
+downG2vsWT.0hgenes=c(downG2vsWT.0h$genes)
+upWT.1vs0genes=c(upWT.1vs0$genes)
+upG2vsWT.0hgenes=c(upG2vsWT.0h$genes)
+downWT.24vs0genes=c(downWT.24vs0$genes)
+upWT.24vs0genes=c(upWT.24vs0$genes)
+de.genes=list(downWT.1vs0=downWT.1vs0genes,downG2vsWT.0h=downG2vsWT.0hgenes,upWT.1vs0=upWT.1vs0genes,upG2vsWT.0h=upG2vsWT.0hgenes) # Put the up- and down- regulated gene ids in a list. 
+plot.new() 
+venn.plot=venn.diagram(de.genes,filename=NULL,fill=c("red","blue","yellow","purple"))
+grid.draw(venn.plot)
+de.genes=list(downWT.24vs0=downWT.24vs0genes,downG2vsWT.0h=downG2vsWT.0hgenes,upWT.24vs0=upWT.24vs0genes,upG2vsWT.0h=upG2vsWT.0hgenes) # Put the up- and down- regulated gene ids in a list. 
+plot.new() 
+venn.plot=venn.diagram(de.genes,filename=NULL,fill=c("red","blue","yellow","purple"))
+grid.draw(venn.plot)
+```
+
+## GO Enrichment analysis with **AgriGO** and **Ami GO2**
+
+In the paper, the author use the Singular Enrichment Analysis (SEA) tool from **AgriGO** (Du, Z. et al.,2010) website (bioinfo.cau.edu.cn/agriGO/analysis. php) to do the GO enrichment analysis for the de genes in WT under cold treatment. P values are corrected with the FDR criterion. The author observed a strong enrichment in genes associated with ribosome biogenesis, protein translation, and RNA processing and splicing among the genes up-regulated in response to cold conditions in wild-type plants. In the paper, for the up-regulated genes in comparison **WT.1vs0**, there are 200 significant GO terms observed, majority of which are associated with plant stress response, signaling, RNA biosynthesis, transcription,etc. For the down regulated genes, the author observed 4 significant GO terms , while the author observed 283 significant GO term for the comparison **WT.24vs0**.    
+
+To confirm this, I use the upregulated genes  produced by edgeR method for the comparison **WT.1vs0** to do GO enrichment analysis using the **AgriGo** tool with the category of **Biological Process**. And I observed 271 significant GO terms. And the 10 most significant GO terms are all associated with immune response or stress response. There are also a lot GO terms associated with RNA biosynthetic, transcription. I also analyze the downregulated genes in this comparison, and 11 significant GO terms are observed, which are all associated with response to environmental variation.   
+
+```{r GOedgeR.WT.1vs0}
+SigGOupedgeR.WT.1vs0=read.csv("SigGO upedgeR.WT.1vs0.csv",sep=",") 
+SigGOupedgeR.WT.1vs0[1:5,1:3] 
+SigGOdownedgeR.WT.1vs0=read.csv("SigGO downedgeR.WT.1vs0.csv",sep=",") 
+SigGOdownedgeR.WT.1vs0[1:5,1:3] 
+```
+
+For the the upregulated genes in **WT.24vs0** comparison, there are 304 significant GO terms, and the top 10 significant GO terms are mostly associate with RNA methylation, RNA modification. The significant GO terms are mostly associated with stress response, signaling, protein translation and RNA prodessing. For the downregulated genes, there are 264 significant GO terms. This support the notion that transcriptional regulation of the RNA processing machinery is an important component of the cold acclimation mechanism in plants. 
+
+```{r GOedgeR.WT.24vs0}
+SigGOupedgeR.WT.24vs0=read.csv("SigGO upedgeR.WT.24vs0.csv",sep=",") 
+SigGOupedgeR.WT.24vs0[1:5,1:3] 
+SigGOdownedgeR.WT.24vs0=read.csv("SigGOdownedgeR.WT.24vs0.csv",sep=",") 
+SigGOdownedgeR.WT.24vs0[1:5,1:3]
+```
+
+I also do GO enrichment analysis on the **G2vsWT.0h** comparison using **AgriGo** with  both upregulated genes and downregulated genes. For the upregulated genes, there aer 101 significant GOs. And one of the most significant GO term is RNA elongation, and the top 10 significant GO terms are mainly associated with defense response and immune response. For the underregulated genes, there aer 135 significant GO terms. And the most significant GO term is secondary metabolic process, and the top significant GO terms are mainly associated with secondary metabolite biosynthesis.  
+
+```{r GOedgeR.G2vsWT.0h}
+SigGOupedgeR.G2vsWT.0h=read.csv("SigGO upedgeR.G2vsWT.0h.csv",sep=",")
+SigGOupedgeR.G2vsWT.0h[1:5,1:3]
+SigGOdownedgeR.G2vsWT.0h=read.csv("SigGOdownedgeR.G2vsWT.0h.csv",sep=",")
+SigGOdownedgeR.G2vsWT.0h[1:5,1:3]
+```
+
+I use another online GO Enrichment Analysis tool **Ami GO2** (http://amigo.geneontology.org/rte,) to analyze the upregulated genes for the **WT.24vs0** comparison produced by edgeR method. **Ami GO2** use the Bonfferoni corrected p.value (<=0.05) . The annotation data set is **PANTHER GO-slim Bilogical Process**. The reference gene list is **all genes in PANTHER database for Arabidopsis**. 4021 genes are mapped out of 4208 upregulated genes.  According to the GO results, there are 238 significant GO terms identified with AmiGO tool, with the most significant as RNA methylation, which is the same as that of the AgriGo tool. The top 10 significant GO terms are associated with RNA methylation, protein translation, transcription, protein targeting. The two online tools: **AgroGo** and **Ami GO2**, give very similar significant GO terms.   
+
+```{r}
+amiGO.upedgeRWT.24vs0=read.csv("amiGO.upedgeRWT.24vs0.csv",sep=",")
+amiGO.upedgeRWT.24vs0[1:5,1:3]
+```
+
+# Discussion
+
+When working on this project, I learn to analyze RNA-seq data with multiple factors (in this case genotype and treatment). The first important step is to filter and diacard small number (<10) count data. Then do quality control on the big count data, for which there are several visualizing method, such as histograms, scattering plots, cluster dendragram, plot BCV, plot MDS. Normalization will equalize the library size effect. I also learn that there are multiple methods for one purpose. In this project, I use both **edgeR** and **voom** to identify differentially expressed genes. I find that both methods give very similar differentially expressed genes. For **GO** enrichment analysis, I use both **AgriGO** and **Ami GO2** online tools, and find that they give similar GO terms. I also use VennDiagram to compare the author's de gene list with my results, and find that the numbers are very close, and majority of them match well. 
+
+From doing this project, I also notice that many biological processes, such as RNA processing, protein translation, changes (up- or down-regulated) under cold treatment. I learn that transcriptional regulation of the RNA processing machinery is an important component of the cold acclimation mechanism in plants. Because of time and page limitation, I do not carry out the alternative splicing analysis using the AS and intron bin count data, in the future, I will do the AS analysis, and combine the result with that of RNA-seq to gain more insight in how alternative splicing event is linked to the control of circadian networks in plants.  
+
+# Reference
+
+Chen, H., & Boutros, P. C. (2011). VennDiagram: a package for the generation of highly-customizable Venn and Euler diagrams in R. BMC bioinformatics, 12(1), 35.
+
+DAVID Bioinformatics Resources 6.7. National Institute of Allergy and Infectious Diseases (NIAID), NIH. Available online: http://david.abcc.ncifcrf.gov/home.jsp.
+
+Du, Z., Zhou, X., Ling, Y., Zhang, Z., & Su, Z. (2010). agriGO: a GO analysis toolkit for the agricultural community. Nucleic acids research, gkq310.
+
+Loader, C. (2007). Locfit: Local regression, likelihood and density estimation. R package version, 1-5.
+Lun, A. T., Chen, Y., & Smyth, G. K. (2015). It’s DE-licious: a recipe for differential expression analyses of RNA-seq experiments using quasi-likelihood methods in edgeR.
+
+Robinson, M. D., McCarthy, D. J., & Smyth, G. K. (2010). edgeR: a Bioconductor package for differential expression analysis of digital gene expression data. Bioinformatics, 26(1), 139-140.
+
+Schlaen, R. G., Mancini, E., Sanchez, S. E., Perez-Santángelo, S., Rugnone, M. L., Simpson, C. G., ... & Yanovsky, M. J. (2015). The spliceosome assembly factor GEMIN2 attenuates the effects of temperature on alternative splicing and circadian rhythms. Proceedings of the National Academy of Sciences, 112(30), 9382-9387.
+
+Smyth, G. K. (2005). Limma: linear models for microarray data. In Bioinformatics and computational biology solutions using R and Bioconductor (pp. 397-420). Springer New York.
+
+Robinson, M. D., & Oshlack, A. (2010). A scaling normalization method for differential expression analysis of RNA-seq data. Genome Biol, 11(3), R25.
+
+# SessionInfo
+
+```{r sessionInfo}
+toLatex(sessionInfo())
+print(gc())
+```
